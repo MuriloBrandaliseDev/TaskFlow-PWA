@@ -10,11 +10,15 @@ import {
   Alert,
   Dimensions,
   Keyboard,
-  TouchableWithoutFeedback
+  TouchableWithoutFeedback,
+  Animated,
+  Platform
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
+import SplashScreen from './src/components/SplashScreen';
+import { getDeviceId, getStorageKey } from './src/utils/deviceId';
 
 const { width } = Dimensions.get('window');
 
@@ -29,6 +33,9 @@ interface Task {
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [showSplash, setShowSplash] = useState(true);
+  const [deviceId, setDeviceId] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTask, setNewTask] = useState({ title: '', description: '', priority: 'medium' as const });
@@ -36,13 +43,16 @@ export default function App() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
 
-  // Chave para salvar no AsyncStorage
-  const STORAGE_KEY = '@taskflow_tasks';
+  // Animações
+  const fadeAnim = useState(new Animated.Value(0))[0];
+  const slideAnim = useState(new Animated.Value(30))[0];
 
   // Função para salvar tarefas no AsyncStorage
   const saveTasks = async (tasksToSave: Task[]) => {
+    if (!deviceId) return;
     try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(tasksToSave));
+      const storageKey = getStorageKey(deviceId);
+      await AsyncStorage.setItem(storageKey, JSON.stringify(tasksToSave));
     } catch (error) {
       console.error('Erro ao salvar tarefas:', error);
     }
@@ -50,8 +60,10 @@ export default function App() {
 
   // Função para carregar tarefas do AsyncStorage
   const loadTasks = async () => {
+    if (!deviceId) return;
     try {
-      const savedTasks = await AsyncStorage.getItem(STORAGE_KEY);
+      const storageKey = getStorageKey(deviceId);
+      const savedTasks = await AsyncStorage.getItem(storageKey);
       if (savedTasks) {
         const parsedTasks = JSON.parse(savedTasks);
         // Converter strings de data de volta para objetos Date
@@ -65,26 +77,18 @@ export default function App() {
         const exampleTasks: Task[] = [
           {
             id: '1',
-            title: 'Revisar relatório mensal',
-            description: 'Analisar dados de vendas e preparar apresentação',
+            title: 'Bem-vindo ao TaskFlow!',
+            description: 'Esta é sua primeira tarefa. Toque para marcar como concluída.',
             priority: 'high',
             completed: false,
             createdAt: new Date()
           },
           {
             id: '2',
-            title: 'Comprar ingredientes',
-            description: 'Lista: arroz, frango, legumes',
+            title: 'Explore o app',
+            description: 'Teste criar, editar e excluir tarefas',
             priority: 'medium',
             completed: false,
-            createdAt: new Date()
-          },
-          {
-            id: '3',
-            title: 'Agendar consulta médica',
-            description: 'Marcar consulta com cardiologista',
-            priority: 'low',
-            completed: true,
             createdAt: new Date()
           }
         ];
@@ -96,18 +100,50 @@ export default function App() {
     }
   };
 
-  // Carregar tarefas quando o componente monta
-  useEffect(() => {
-    loadTasks();
-  }, []);
+  // Inicializar app
+  const initializeApp = async () => {
+    try {
+      const id = await getDeviceId();
+      setDeviceId(id);
+      await loadTasks();
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Erro ao inicializar app:', error);
+      setIsLoading(false);
+    }
+  };
+
+  // Finalizar splash screen
+  const handleSplashFinish = () => {
+    setShowSplash(false);
+    initializeApp();
+  };
 
   // Salvar tarefas sempre que o array de tarefas mudar (exceto no carregamento inicial)
   useEffect(() => {
-    // Só salva se já carregou as tarefas (evita salvar array vazio no início)
-    if (tasks.length > 0) {
+    // Só salva se já carregou as tarefas e tem deviceId (evita salvar array vazio no início)
+    if (tasks.length > 0 && deviceId) {
       saveTasks(tasks);
     }
-  }, [tasks]);
+  }, [tasks, deviceId]);
+
+  // Animar entrada do conteúdo
+  useEffect(() => {
+    if (!isLoading) {
+      Animated.parallel([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        Animated.timing(slideAnim, {
+          toValue: 0,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [isLoading]);
 
   const addTask = () => {
     if (!newTask.title.trim()) {
@@ -192,8 +228,31 @@ export default function App() {
     }
   });
 
+  // Mostrar splash screen
+  if (showSplash) {
+    return <SplashScreen onFinish={handleSplashFinish} />;
+  }
+
+  // Mostrar loading
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <StatusBar style="light" />
+        <Text style={styles.loadingText}>Carregando...</Text>
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.container}>
+    <Animated.View 
+      style={[
+        styles.container,
+        {
+          opacity: fadeAnim,
+          transform: [{ translateY: slideAnim }],
+        },
+      ]}
+    >
       <StatusBar style="light" />
       
       {/* Header Minimalista */}
@@ -202,6 +261,11 @@ export default function App() {
           <View>
             <Text style={styles.title}>TaskFlow</Text>
             <Text style={styles.subtitle}>Organize suas tarefas</Text>
+            {deviceId && (
+              <Text style={styles.deviceInfo}>
+                Dispositivo: {deviceId.slice(-8)}
+              </Text>
+            )}
           </View>
           <TouchableOpacity 
             style={styles.addButton}
@@ -481,7 +545,7 @@ export default function App() {
           </View>
         </View>
       </Modal>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -489,6 +553,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0a0a0a',
+  },
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#888888',
+    fontWeight: '500',
   },
   header: {
     paddingTop: 60,
@@ -514,6 +589,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#888888',
     marginTop: 2,
+  },
+  deviceInfo: {
+    fontSize: 10,
+    color: '#444444',
+    marginTop: 4,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   addButton: {
     backgroundColor: '#2563eb',
