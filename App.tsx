@@ -19,6 +19,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import SplashScreen from './src/components/SplashScreen';
 import { getDeviceId, getStorageKey } from './src/utils/deviceId';
+import { 
+  initializeNotifications, 
+  checkUpcomingTasks, 
+  checkOverdueTasks,
+  loadNotificationSettings,
+  type TaskWithNotification 
+} from './src/utils/notifications';
 
 const { width } = Dimensions.get('window');
 
@@ -29,6 +36,8 @@ interface Task {
   priority: 'low' | 'medium' | 'high';
   completed: boolean;
   createdAt: Date;
+  dueDate?: Date;
+  reminderSent?: boolean;
 }
 
 export default function App() {
@@ -38,7 +47,13 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
 
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newTask, setNewTask] = useState({ title: '', description: '', priority: 'medium' as const });
+  const [newTask, setNewTask] = useState({ 
+    title: '', 
+    description: '', 
+    priority: 'medium' as const,
+    dueDate: '',
+    dueTime: ''
+  });
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'completed'>('all');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
@@ -106,6 +121,10 @@ export default function App() {
       const id = await getDeviceId();
       setDeviceId(id);
       await loadTasks();
+      
+      // Inicializar notificações
+      await initializeNotifications();
+      
       setIsLoading(false);
     } catch (error) {
       console.error('Erro ao inicializar app:', error);
@@ -145,10 +164,46 @@ export default function App() {
     }
   }, [isLoading]);
 
+  // Verificar notificações periodicamente
+  useEffect(() => {
+    if (tasks.length > 0 && !isLoading) {
+      const checkNotifications = async () => {
+        await checkUpcomingTasks(tasks as TaskWithNotification[]);
+        await checkOverdueTasks(tasks as TaskWithNotification[]);
+      };
+
+      // Verificar imediatamente
+      checkNotifications();
+
+      // Verificar a cada 5 minutos
+      const interval = setInterval(checkNotifications, 5 * 60 * 1000);
+
+      return () => clearInterval(interval);
+    }
+  }, [tasks, isLoading]);
+
   const addTask = () => {
     if (!newTask.title.trim()) {
       Alert.alert('Erro', 'Digite um título para a tarefa');
       return;
+    }
+
+    // Criar data de vencimento se fornecida
+    let dueDate: Date | undefined;
+    if (newTask.dueDate && newTask.dueTime) {
+      const isoDateString = convertBrazilianDateToISO(newTask.dueDate, newTask.dueTime);
+      if (isoDateString) {
+        dueDate = new Date(isoDateString);
+        
+        // Verificar se a data é válida e no futuro
+        if (isNaN(dueDate.getTime()) || dueDate <= new Date()) {
+          Alert.alert('Erro', 'A data de vencimento deve ser no futuro');
+          return;
+        }
+      } else {
+        Alert.alert('Erro', 'Formato de data ou hora inválido');
+        return;
+      }
     }
 
     const task: Task = {
@@ -157,11 +212,13 @@ export default function App() {
       description: newTask.description,
       priority: newTask.priority,
       completed: false,
-      createdAt: new Date()
+      createdAt: new Date(),
+      dueDate: dueDate,
+      reminderSent: false
     };
 
     setTasks([task, ...tasks]);
-    setNewTask({ title: '', description: '', priority: 'medium' });
+    setNewTask({ title: '', description: '', priority: 'medium', dueDate: '', dueTime: '' });
     setShowAddModal(false);
   };
 
@@ -210,6 +267,62 @@ export default function App() {
       case 'low': return 'Baixa';
       default: return 'Normal';
     }
+  };
+
+  // Função para formatar data brasileira (DD/MM/AAAA)
+  const formatBrazilianDate = (text: string) => {
+    // Remove tudo que não é número
+    const numbers = text.replace(/\D/g, '');
+    
+    // Aplica a máscara DD/MM/AAAA
+    if (numbers.length <= 2) {
+      return numbers;
+    } else if (numbers.length <= 4) {
+      return `${numbers.slice(0, 2)}/${numbers.slice(2)}`;
+    } else {
+      return `${numbers.slice(0, 2)}/${numbers.slice(2, 4)}/${numbers.slice(4, 8)}`;
+    }
+  };
+
+  // Função para formatar hora brasileira (HH:MM)
+  const formatBrazilianTime = (text: string) => {
+    // Remove tudo que não é número
+    const numbers = text.replace(/\D/g, '');
+    
+    // Aplica a máscara HH:MM
+    if (numbers.length <= 2) {
+      return numbers;
+    } else {
+      return `${numbers.slice(0, 2)}:${numbers.slice(2, 4)}`;
+    }
+  };
+
+  // Função para converter data brasileira para formato ISO
+  const convertBrazilianDateToISO = (brazilianDate: string, time: string) => {
+    if (!brazilianDate || !time) return null;
+    
+    // Formato: DD/MM/AAAA
+    const [day, month, year] = brazilianDate.split('/');
+    if (!day || !month || !year) return null;
+    
+    // Formato: HH:MM
+    const [hours, minutes] = time.split(':');
+    if (!hours || !minutes) return null;
+    
+    // Criar data no formato ISO (AAAA-MM-DDTHH:MM)
+    const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hours.padStart(2, '0')}:${minutes.padStart(2, '0')}`;
+    return isoDate;
+  };
+
+  // Função para formatar data para exibição brasileira
+  const formatDateForDisplay = (date: Date) => {
+    return date.toLocaleDateString('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   };
 
   const completedTasks = tasks.filter(task => task.completed).length;
@@ -377,9 +490,19 @@ export default function App() {
                   )}
                   
                   <View style={styles.taskMeta}>
-                    <Text style={styles.taskDate}>
-                      {task.createdAt.toLocaleDateString('pt-BR')}
-                    </Text>
+                    <View style={styles.taskDates}>
+                      <Text style={styles.taskDate}>
+                        Criada: {task.createdAt.toLocaleDateString('pt-BR')}
+                      </Text>
+                      {task.dueDate && (
+                        <Text style={[
+                          styles.taskDueDate,
+                          new Date(task.dueDate) < new Date() && !task.completed && styles.taskOverdue
+                        ]}>
+                          Vence: {new Date(task.dueDate).toLocaleDateString('pt-BR')} às {new Date(task.dueDate).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      )}
+                    </View>
                     <TouchableOpacity 
                       style={styles.deleteButton}
                       onPress={(e) => {
@@ -420,7 +543,7 @@ export default function App() {
             </View>
             
             {/* Formulário */}
-            <View style={styles.formSection}>
+            <ScrollView style={styles.formSection} showsVerticalScrollIndicator={false}>
               <Text style={styles.inputLabel}>Título *</Text>
               <TextInput
                 style={styles.input}
@@ -447,6 +570,7 @@ export default function App() {
               />
               
               <Text style={styles.inputLabel}>Prioridade</Text>
+              <Text style={styles.scrollHint}>↓ Mais campos abaixo</Text>
               <View style={styles.priorityOptions}>
                 {[
                   { key: 'low', label: 'Baixa', color: '#059669', icon: '🟢' },
@@ -472,7 +596,62 @@ export default function App() {
                   </TouchableOpacity>
                 ))}
               </View>
-            </View>
+              
+              <Text style={styles.inputLabel}>Data de Vencimento (Opcional)</Text>
+              <Text style={styles.scrollHint}>↓ Role para baixo para ver mais campos</Text>
+              <View style={styles.dateTimeRow}>
+                <View style={styles.dateTimeInput}>
+                  <Text style={styles.dateTimeLabel}>Data</Text>
+                  <TextInput
+                    style={styles.dateTimeField}
+                    placeholder="DD/MM/AAAA"
+                    value={newTask.dueDate}
+                    onChangeText={(text) => {
+                      const formatted = formatBrazilianDate(text);
+                      setNewTask({ ...newTask, dueDate: formatted });
+                    }}
+                    placeholderTextColor="#666666"
+                    returnKeyType="next"
+                    onSubmitEditing={() => Keyboard.dismiss()}
+                    keyboardType="numeric"
+                    maxLength={10}
+                  />
+                </View>
+                <View style={styles.dateTimeInput}>
+                  <Text style={styles.dateTimeLabel}>Hora</Text>
+                  <TextInput
+                    style={styles.dateTimeField}
+                    placeholder="HH:MM"
+                    value={newTask.dueTime}
+                    onChangeText={(text) => {
+                      const formatted = formatBrazilianTime(text);
+                      setNewTask({ ...newTask, dueTime: formatted });
+                    }}
+                    placeholderTextColor="#666666"
+                    returnKeyType="done"
+                    onSubmitEditing={() => Keyboard.dismiss()}
+                    keyboardType="numeric"
+                    maxLength={5}
+                  />
+                </View>
+              </View>
+              
+              {(newTask.dueDate || newTask.dueTime) && (
+                <View style={styles.dueDatePreview}>
+                  <Text style={styles.dueDatePreviewText}>
+                    📅 Vencimento: {newTask.dueDate && newTask.dueTime ? 
+                      `${newTask.dueDate} às ${newTask.dueTime}` : 
+                      newTask.dueDate ? newTask.dueDate : newTask.dueTime
+                    }
+                  </Text>
+                </View>
+              )}
+              
+              <View style={styles.scrollEndIndicator}>
+                <Text style={styles.scrollEndText}>📝 Formulário completo</Text>
+                <Text style={styles.scrollEndSubtext}>Use os botões abaixo para salvar</Text>
+              </View>
+            </ScrollView>
             
             {/* Botões */}
             <View style={styles.modalButtons}>
@@ -480,7 +659,7 @@ export default function App() {
                 style={styles.cancelButton}
                 onPress={() => {
                   Keyboard.dismiss();
-                  setNewTask({ title: '', description: '', priority: 'medium' });
+                  setNewTask({ title: '', description: '', priority: 'medium', dueDate: '', dueTime: '' });
                   setShowAddModal(false);
                 }}
               >
@@ -543,7 +722,7 @@ export default function App() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+    </View>
       </Modal>
     </Animated.View>
   );
@@ -553,6 +732,8 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0a0a0a',
+    minHeight: Platform.OS === 'web' ? '100vh' : '100vh',
+    paddingTop: Platform.OS === 'web' ? -10 : 0,
   },
   loadingContainer: {
     flex: 1,
@@ -566,8 +747,8 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   header: {
-    paddingTop: 60,
-    paddingBottom: 24,
+    paddingTop: Platform.OS === 'web' ? 5 : 60,
+    paddingBottom: 20,
     paddingHorizontal: 24,
     backgroundColor: '#111111',
     borderBottomWidth: 1,
@@ -577,10 +758,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: Platform.OS === 'web' ? 16 : 24,
   },
   title: {
-    fontSize: 28,
+    fontSize: Platform.OS === 'web' ? 24 : 28,
     fontWeight: '700',
     color: '#ffffff',
     letterSpacing: -0.5,
@@ -676,6 +857,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     backgroundColor: '#0a0a0a',
+    minHeight: Platform.OS === 'web' ? 'calc(100vh - 80px)' : '100vh',
   },
   filterTabs: {
     flexDirection: 'row',
@@ -705,7 +887,9 @@ const styles = StyleSheet.create({
   },
   tasksList: {
     paddingHorizontal: 24,
-    paddingBottom: 24,
+    paddingBottom: Platform.OS === 'web' ? 40 : 24,
+    flex: 1,
+    backgroundColor: '#0a0a0a',
   },
   taskItem: {
     flexDirection: 'row',
@@ -775,11 +959,24 @@ const styles = StyleSheet.create({
   taskMeta: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+  },
+  taskDates: {
+    flex: 1,
   },
   taskDate: {
     fontSize: 12,
     color: '#666666',
+    marginBottom: 2,
+  },
+  taskDueDate: {
+    fontSize: 12,
+    color: '#2563eb',
+    fontWeight: '500',
+  },
+  taskOverdue: {
+    color: '#dc2626',
+    fontWeight: '600',
   },
   deleteButton: {
     padding: 4,
@@ -812,9 +1009,10 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.9)',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     alignItems: 'center',
-    padding: 24,
+    padding: Platform.OS === 'web' ? 10 : 24,
+    paddingTop: Platform.OS === 'web' ? 50 : 24,
   },
   modalContent: {
     backgroundColor: '#111111',
@@ -824,7 +1022,7 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     borderWidth: 1,
     borderColor: '#222222',
-    maxHeight: '80%',
+    maxHeight: Platform.OS === 'web' ? '85vh' : '80%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -834,6 +1032,7 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#222222',
+    minHeight: 60,
   },
   modalTitle: {
     fontSize: 20,
@@ -856,6 +1055,7 @@ const styles = StyleSheet.create({
   formSection: {
     padding: 24,
     paddingTop: 16,
+    flex: 1,
   },
   inputLabel: {
     fontSize: 14,
@@ -872,6 +1072,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#ffffff',
     backgroundColor: '#1a1a1a',
+    minHeight: 48,
   },
   textArea: {
     height: 100,
@@ -880,16 +1081,19 @@ const styles = StyleSheet.create({
   priorityOptions: {
     flexDirection: 'row',
     gap: 12,
-    marginBottom: 24,
+    marginBottom: 20,
+    marginTop: 8,
   },
   priorityOption: {
     flex: 1,
-    padding: 16,
+    padding: 14,
     borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
     backgroundColor: '#1a1a1a',
     borderColor: '#333333',
+    minHeight: 60,
+    justifyContent: 'center',
   },
   priorityOptionSelected: {
     backgroundColor: '#2563eb',
@@ -906,6 +1110,76 @@ const styles = StyleSheet.create({
   },
   priorityOptionTextSelected: {
     color: '#ffffff',
+  },
+  dateTimeRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+    marginTop: 8,
+  },
+  dateTimeInput: {
+    flex: 1,
+  },
+  dateTimeLabel: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#888888',
+    marginBottom: 6,
+  },
+  dateTimeField: {
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 8,
+    padding: 14,
+    fontSize: 14,
+    color: '#ffffff',
+    backgroundColor: '#1a1a1a',
+    textAlign: 'center',
+    minHeight: 48,
+  },
+  dueDatePreview: {
+    backgroundColor: '#1a1a1a',
+    padding: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2563eb',
+    marginBottom: 16,
+    marginTop: 8,
+  },
+  dueDatePreviewText: {
+    fontSize: 14,
+    color: '#2563eb',
+    fontWeight: '500',
+    textAlign: 'center',
+  },
+  scrollHint: {
+    fontSize: 12,
+    color: '#666666',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  scrollEndIndicator: {
+    backgroundColor: '#1a1a1a',
+    padding: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#333333',
+    marginTop: 16,
+    marginBottom: 8,
+    alignItems: 'center',
+  },
+  scrollEndText: {
+    fontSize: 14,
+    color: '#2563eb',
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  scrollEndSubtext: {
+    fontSize: 12,
+    color: '#888888',
+    fontStyle: 'italic',
   },
   modalButtons: {
     flexDirection: 'row',

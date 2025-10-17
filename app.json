@@ -29,13 +29,7 @@
       "package": "com.taskflow.app"
     },
     "web": {
-      "favicon": "./assets/favicon.png",
-      "bundler": "metro",
-      "startUrl": "https://taskmflow.netlify.app/"
-    },
-    "scheme": "taskflow",
-    "updates": {
-      "url": "https://taskmflow.netlify.app/"
+      "favicon": "./assets/favicon.png"
     },
     "plugins": [],
     "extra": {
